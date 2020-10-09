@@ -46,38 +46,45 @@ class RequirementsDelegate(QStyledItemDelegate):
 	def __init__(self, parent=None):
 		super(RequirementsDelegate, self).__init__(parent)
 		self.doc = QTextDocument(self)
-		#self.plantumlService = plantuml.PlantUML()
 		self.h = None
 		self.w = None
 
 	def createEditor(self, parent, option, index):
-		if index.column() == 8: #'text'
+		if index.model()._headerData[index.column()] == 'text':
 			edit = QPlainTextEdit(parent)
 			fixed_font = QFontDatabase.systemFont(QFontDatabase.FixedFont)
 			fixed_font.setStyleHint(QFont.TypeWriter)
 			edit.setFont(fixed_font)
 			return edit
-		return QStyledItemDelegate.createEditor(self, parent, option, index)
+		return super(RequirementsDelegate, self).createEditor(parent, option, index) # editor chosen with the QtEditRole in model.data()
 
 	def setEditorData(self, editor, index):
-		if index.column() == 8: #'text'
+		if index.model()._headerData[index.column()] == 'text': 
 			editor.insertPlainText(index.data())
+		if index.model()._headerData[index.column()] == 'level': # would create an empty QLineEdit otherwise
+			editor.setText(index.data())
+		return super(RequirementsDelegate, self).setEditorData(editor, index)
 
-	def setModelData(self, editor, model, index):
-		if index.column() == 8: #'text'
+	def setModelData(self, editor, model, index): # called after closing the editor
+		# We need to extract a value. Possible editors: https://doc.qt.io/qtforpython/PySide2/QtWidgets/QItemEditorFactory.html
+		
+		# There ought to be be a better way.
+		editorType = str(type(editor))
+		if 'QComboBox' in editorType:
+			model.setData(index, editor.currentText())
+		elif 'QLineEdit' in editorType:
+			model.setData(index, editor.text())
+		elif 'QPlainTextEdit' in editorType:
 			model.setData(index, editor.toPlainText())
 
 	def paint(self, painter, option, index):
-		if index.column() == 8: #'text'
-			text = index.model().data(index) #default role is display
+		mdl = index.model()
+		if mdl._headerData[index.column()] == 'text':
+			text = mdl.data(index) #default role is display
 			palette = QApplication.palette()
-
-			active = index.model()._data[index.row()][2]
-			normative = index.model()._data[index.row()][3]
-			uid = index.model()._data[index.row()][4]
-			asil = index.model()._data[index.row()][5]
-			level = index.model()._data[index.row()][6]
-			header = index.model()._data[index.row()][7]
+			
+			level = str(mdl._data[index.row()][mdl._headerData.index('level')])
+			header = mdl._data[index.row()][mdl._headerData.index('header')]
 
 			if level.endswith('.0'): # first line will be bold
 				lines = [l for l in text.splitlines()]
@@ -133,69 +140,136 @@ class RequirementSetModel(QAbstractTableModel):
 	def load(self):
 		global reqtree
 		self._document = reqtree.find_document(self._docId)
-		self._headerData = ['path', 'root', 'active', 'normative', 'uid', 'asil', 'level', 'header', 'text']
+		
+		# Requirements attributes
+		# -----------------------
+		#
+		# Requirements attributes will be the column names in the table view.
+		#
+		# There are:
+		#  - standard attributes
+		#  - extended attributes (within single requirement)
+		#  - extended attributes with defaults (declared in document)
+		#  - extended attributes that concur to review timestamp (declared in document)
+		#
+		# Attribute names are the keys of items[x]._data
+		# We do a first loop to gather all user-defined attributes
+		
+		# Standard data (pulled from doorstop.item inspection)
+		stdHeaderData = {'path', 'root', 'active', 'normative', 'uid', 'level', 'header', 'text', 'derived', 'ref', 'references', 'reviewed', 'links'}
+		
+		headerData =  []
+		for item in iter_items(self._document):
+			headerData += list(item._data.keys())
+			headerData = list(set(headerData)) # drop duplicates
+		
+		# Non-standard data that we will display in more columns:
+		userHeaderData = set(headerData) - stdHeaderData
+		log.debug('['+str(self._document)+'] Custom requirements attributes: ' + str(userHeaderData))
+		
+		# And we have now the column names.
+		# We put 'text' always to the last column because it usually is stretched.
+		# The 'active' field is always true - inactive requirements are not shown at all. Doorstop doesn't tell us about them.
+		self._headerData = ['uid', 'path', 'root', 'normative', 'derived', 'reviewed', 'level', 'header', 'ref', 'references', 'links'] + list(userHeaderData) + ['text']
+		
+		# Another loop to fill in the table rows
 		self._data = []
 		for item in iter_items(self._document):
 			row = []
 			for f in self._headerData:
 				row.append(str(item.get(f)))
-			#log.debug("Item: "+str(item))
-			row.append(item) # Doorstop item reference put in the last row
+			row.append(item) # Doorstop item reference cached in the last row
 			self._data.append(row)
 		log.debug('['+str(self._document)+'] Requirements reloaded')
 
+	# TableView methods that must be implemented
 	def rowCount(self, index):
 		return len(self._data)
+	
 	def columnCount(self, index):
 		return len(self._headerData)
 
-	def pos(self, h):
-		return self._headerData.index(h)
-
 	def data(self, index, role=Qt.DisplayRole):
 		if not index.isValid():
-			return QVariant()
-		if role == Qt.DisplayRole or role == Qt.EditRole: #--------------- Value
-			if index.column() == self.pos('asil'):
-				if self._data[index.row()][index.column()] == 'None':
-					return 'QM'
-			return self._data[index.row()][index.column()]
+			return None
+			
+		item = self._data[index.row()][len(self._headerData)]
+		colName = self._headerData[index.column()]
+		
+		if role == Qt.DisplayRole: #------------------------------------- Value
+			return str(item.get(colName))
+		
+		if role == Qt.EditRole:
+			return item.get(colName)
 
-		if role == Qt.BackgroundColorRole: #--------------------------------- BG
-				pos = self.pos('level')
-				if self._data[index.row()][pos].endswith('.0'):
-						return QBrush(QColor('#a0a0a0'))
-		if role == Qt.ForegroundRole: #-------------------------------------- FG
-				pos = self.pos('level')
-				if self._data[index.row()][pos].endswith('.0'):
-						return QBrush(QColor('#505050'))
+		if role == Qt.BackgroundRole: #------------------------------------- BG
+			if not item.get('normative') or str(item.get('level')).endswith('.0'):
+				return QBrush(QColor('lightGray'))
+		
+		if role == Qt.ForegroundRole: #------------------------------------- FG
+			if not item.get('normative') or str(item.get('level')).endswith('.0'):
+				return QBrush(QColor('gray'))
+			
 
-	def headerData(self, col, orientation, role=Qt.DisplayRole):
-		if role == Qt.DisplayRole and orientation == Qt.Horizontal:
-			return self._headerData[col]
-		return QAbstractTableModel.headerData(self, col, orientation, role)
+	def headerData(self, num, orientation, role=Qt.DisplayRole):
+	
+		if orientation == Qt.Horizontal: # ---------------------- Column header
+			if role == Qt.DisplayRole: #--------------------------------- Value
+				return self._headerData[num]
+			if role == Qt.ForegroundRole: # -------------------------------- FG
+				# custom attributes: blue
+				if num > 10 and num < len(self._headerData) - 1:
+					return QBrush(QColor('blue'))
+					
+		if orientation == Qt.Vertical: #---------------------------- Row header
+			item = self._data[num][len(self._headerData)]
+			if role == Qt.DisplayRole: #--------------------------------- Value
+				return str(item.get('uid'))
+			if role == Qt.ForegroundRole: #--------------------------------- FG
+				# wrong items: red (TODO)
+				# unreviewed items: orange
+				if not item.get('reviewed'): 
+					return  QBrush(QColor('orange'))
+				# non-normative items: gray
+				if not item.get('normative') or str(item.get('level')).endswith('.0'): # non-normative items: dark gray
+					return QBrush(QColor('gray'))
+				# OK items: green
+				return  QBrush(QColor('darkGreen')) # OK items
+			if role == Qt.ToolTipRole: #------------------------------------ TT
+				tt = "Reviewed: " + str(item.get('reviewed'))
+				tt += "\nNormative: " + str(item.get('normative'))
+				return tt
+		return QAbstractTableModel.headerData(self, num, orientation, role)
+		
 	def flags(self, index):
-		if self._headerData[index.column()] in ['level','asil','text']:
 			return Qt.ItemIsEditable | Qt.ItemIsEnabled | Qt.ItemIsSelectable
-		else:
-			return Qt.ItemIsEnabled | Qt.ItemIsSelectable
-	def sort(self, col, order):
-		self.emit(SIGNAL("layoutAboutToBeChanged()"))
-		self._data = sorted(self._data, key=operator.itemgetter(col))
-		if order == Qt.DescendingOrder:
-			self._data.reverse()
-		self.emit(SIGNAL("layoutChanged()"))
 
-	def setData(self, index, text): # called after closing the editor
-		path = self._data[index.row()][0] # requirement file path
-		try:
-			# item reference is at last position
-			self._data[index.row()][len(self._headerData)].text = text
-			self._data[index.row()][len(self._headerData)].save()
-			self._data[index.row()][self.pos('text')] = self._data[index.row()][len(self._headerData)].get('text') # the last column is the doorstop item
-			log.debug('Edited requirement at ' + path)
-		except doorstop.DoorstopError:
-			log.error("Requirement not saved - manual edit required. " + path)
+	def setData(self, index, text):
+		item = self._data[index.row()][len(self._headerData)]
+		attr = self._headerData[index.column()]
+		
+		# Boolean values are passed as "True" or "False" strings, so we need to determine whether the original datatype was boolean.
+		if type(item.get(attr)) == bool:
+			if text == 'True':
+				text = True
+			else:
+				text = False
+		
+		# Integer values are passed as strings, so we need to convert back to integer
+		if type(item.get(attr)) == int:
+			text = int(text)
+		
+		# Strings are left as they are
+		
+		if item.get(attr) != text:
+			try:
+				attributes = { attr : text }
+				item.set_attributes(attributes)
+				item.save()
+				self._data[index.row()][index.column()] = item.get(attr)
+				log.debug('Updated requirement [' + str(item.get('uid')) + '] attribute ['+attr+']')
+			except doorstop.DoorstopError:
+				log.error('Requirement [' + str(item.get('uid')) + '] file not saved - manual edit required: ' + path)
 
 class RequirementManager(QWidget):
 	'''
@@ -221,9 +295,9 @@ class RequirementManager(QWidget):
 		self.load()
 
 	def load(self):
-		self.loadModel()
-		self.loadDelegate()
-		self.loadView()
+		self.loadModel() # fills in the table
+		self.loadDelegate() # delegate is necessary to edit the "text" field
+		self.loadView() # table view
 
 	def loadModel(self):
 		self.model = RequirementSetModel(self._docId)
@@ -238,15 +312,17 @@ class RequirementManager(QWidget):
 		self.view.setItemDelegate(self.delegate)
 		# Table appearance
 		self.view.setMinimumSize(1024, 768)
-		self.view.hideColumn(self.model.pos('path'))
-		self.view.hideColumn(self.model.pos('root'))
-		#self.view.setSelectionMode(QAbstractItemView.SingleSelection)
-		#self.view.viewport().setAcceptDrops(True)
-		#self.view.setDropIndicatorShown(True)
-		#self.view.setDragEnabled(True)
+		self.view.hideColumn(self.model._headerData.index('path'))
+		self.view.hideColumn(self.model._headerData.index('root'))
+		self.view.hideColumn(self.model._headerData.index('uid'))
+		self.view.hideColumn(self.model._headerData.index('ref'))
+		self.view.hideColumn(self.model._headerData.index('references'))
+		self.view.hideColumn(self.model._headerData.index('links'))
+		self.view.setSelectionMode(QAbstractItemView.SingleSelection)
 		self.view.horizontalHeader().setStretchLastSection(True)
 		self.view.resizeColumnsToContents()
 		self.view.resizeRowsToContents()
+		self.view.setHorizontalScrollMode(QAbstractItemView.ScrollPerPixel);
 		self.view.setVerticalScrollMode(QAbstractItemView.ScrollPerPixel);
 		# Buttons
 		reloadBtn = QPushButton("Reload")
