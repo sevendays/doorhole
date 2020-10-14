@@ -15,21 +15,20 @@ import logging
 import markdown
 from plantuml_markdown import PlantUMLMarkdownExtension
 import tempfile
-import pandas as pd
 
 EXTENSIONS = (
-    'markdown.extensions.extra',
-    'markdown.extensions.sane_lists',
-    'mdx_outline',
-    'mdx_math',
-    PlantUMLMarkdownExtension(
-        server='',#'http://www.plantuml.com/plantuml',
-        cachedir=tempfile.gettempdir(),
-        format='svg',
-        classes='class1,class2',
-        title='UML',
-        alt='UML Diagram',
-    ),
+	'markdown.extensions.extra',
+	'markdown.extensions.sane_lists',
+	'mdx_outline',
+	'mdx_math',
+	PlantUMLMarkdownExtension(
+		server='',#'http://www.plantuml.com/plantuml',
+		cachedir=tempfile.gettempdir(),
+		format='svg',
+		classes='class1,class2',
+		title='UML',
+		alt='UML Diagram',
+	),
 )
 
 logging.basicConfig(stream=sys.stdout, level=logging.DEBUG)
@@ -37,6 +36,7 @@ logging.getLogger('doorstop').setLevel(logging.WARNING)
 logging.getLogger('MARKDOWN').setLevel(logging.WARNING)
 logger = logging.getLogger
 log = logger(__name__)
+
 
 # requirements tree is a global because it's shared by all classes.
 # Maybe it should become a singleton.
@@ -46,6 +46,7 @@ class RequirementsDelegate(QStyledItemDelegate):
 	def __init__(self, parent=None):
 		super(RequirementsDelegate, self).__init__(parent)
 		self.doc = QTextDocument(self)
+		self.docIndex = None
 		self.h = None
 		self.w = None
 
@@ -76,45 +77,65 @@ class RequirementsDelegate(QStyledItemDelegate):
 			model.setData(index, editor.text())
 		elif 'QPlainTextEdit' in editorType:
 			model.setData(index, editor.toPlainText())
+	
+	def getDoc(self, option, index): # builds the doc inside self.doc, uses self.index as cache
+		if self.docIndex == index: # Doc already done
+			return
+		
+		# a new doc is to be rendered
+		self.docIndex = index
+		mdl = index.model()
+		if mdl._headerData[index.column()] == 'text':
+			item = mdl._data[index.row()][len(mdl._headerData)] # DS item cached in last column
+			text = item.get('text')
+			level = str(item.get('level'))
+			header = str(item.get('header'))
+			item_path = item.get('path') # doorstop property 'root' from DS item
+			item_path = os.path.dirname(os.path.realpath(item_path))
+			
+			# mimick DS title and header attributes
+			lines = [l for l in text.splitlines()]
+			heading = ''
+			if level.endswith('.0'): # Chapter title
+				heading += '#'*level.count('.') + ' ' + level[:-2] + ' '
+				if header.strip(): # use header as heading
+					heading += header.strip() + '\n\n'
+					lines = [heading] + lines
+				else: # use first line as heading
+					heading += lines[0] + '\n\n'
+					lines = [heading] + lines[1:]
+			else: # Requirement
+				if header.strip(): # use header as heading
+					heading += '#'*(level.count('.') +1) + ' ' + level + ' ' + header.strip()
+					if item.normative:
+						heading += ' (' + str(item.uid) + ')'
+				else: # use UID as heading
+					heading += '#'*(level.count('.') +1) + ' ' + level + ' ' + str(item.uid)
+				lines = [heading] + lines
+			text = '\n'.join(lines)
+
+			# change work dir to where the reqs are stored, otherwise images will not be rendered
+			cwd_bkp = os.getcwd()
+			try:
+				os.path.dirname(os.path.realpath(__file__))
+				os.chdir(item_path) # necessary to solve linked items with relative paths (e.g. images)
+				html = markdown.markdown(text, extensions=EXTENSIONS)
+				self.doc.setHtml(html)
+			except Exception as e:
+				warning = '**An error occurred while displaying the content**\n\n: '+ str(e) + '\n\n'
+				text = warning + text
+				self.doc.setMarkdown(text)
+			os.chdir(cwd_bkp)
+			
+			# Document should be restricted to column width
+			options = QStyleOptionViewItem(option)
+			self.doc.setTextWidth(options.rect.width())
 
 	def paint(self, painter, option, index):
 		mdl = index.model()
 		if mdl._headerData[index.column()] == 'text':
-			text = mdl.data(index) #default role is display
-			palette = QApplication.palette()
-			
-			level = str(mdl._data[index.row()][mdl._headerData.index('level')])
-			header = mdl._data[index.row()][mdl._headerData.index('header')]
-
-			if level.endswith('.0'): # first line will be bold
-				lines = [l for l in text.splitlines()]
-				heading = '#'*level.count('.') + ' ' + level[:-2]
-				if header.strip():
-					heading += ' ' + header.strip() + '\n\n'
-					lines = [heading] + lines
-				else:
-					heading += ' ' + lines[0].replace('**','') + '\n\n'
-					lines[0] = heading
-				text = '\n'.join(lines)
-
-			#self.doc.setMarkdown(text) // will not render images
-			try:
-				html = markdown.markdown(text, extensions=EXTENSIONS)
-				self.doc.setHtml(html)
-			except:
-				warning = '!! **An error occurred while displaying the content**\n\n'
-				text = warning + text
-				self.doc.setMarkdown(text) # will not render images
-			size = super(RequirementsDelegate, self).sizeHint(option, index);
-			#log.debug('-------------oh: ' + str(size.height()))
-			#log.debug('-------------ow: ' + str(size.width()))
-			if size.width() < 400:
-				size.setWidth(400)
-			self.doc.setTextWidth(size.width())
-			self.w = self.doc.textWidth()
-			self.h = self.doc.size().height()
-			#log.debug('-------------dh: ' + str(self.doc.size().height()))
-			#log.debug('-------------dw: ' + str(self.doc.size().width()))
+			# get rich text document and paint it
+			self.getDoc(option, index)
 			ctx = QAbstractTextDocumentLayout.PaintContext()
 			painter.save()
 			painter.translate(option.rect.topLeft());
@@ -125,10 +146,15 @@ class RequirementsDelegate(QStyledItemDelegate):
 			super(RequirementsDelegate, self).paint(painter, option, index)
 
 	def sizeHint(self, option, index):
-		size = super(RequirementsDelegate, self).sizeHint(option, index)
-		if self.h:
-			size.setHeight(self.h + 2)
-		return size
+		mdl = index.model()
+		if mdl._headerData[index.column()] == 'text':
+			# get rich text document and size it
+			self.getDoc(option, index)
+			#log.debug(mdl._headerData[index.column()] + "\t W: " + str(self.doc.idealWidth()) + " H: " +  str(self.doc.size().height()))
+			return QSize(self.doc.idealWidth(), self.doc.size().height())
+		else:
+			return QSize(0,0)
+			#super(RequirementsDelegate, self).sizeHint(option, index)
 
 class RequirementSetModel(QAbstractTableModel):
 	def __init__(self, docId=None, parent=None):
@@ -229,12 +255,12 @@ class RequirementSetModel(QAbstractTableModel):
 				# wrong items: red (TODO)
 				# unreviewed items: orange
 				if not item.get('reviewed'): 
-					return  QBrush(QColor('orange'))
+					return QBrush(QColor('orange'))
 				# non-normative items: gray
 				if not item.get('normative') or str(item.get('level')).endswith('.0'): # non-normative items: dark gray
 					return QBrush(QColor('gray'))
 				# OK items: green
-				return  QBrush(QColor('darkGreen')) # OK items
+				return QBrush(QColor('darkGreen')) # OK items
 			if role == Qt.ToolTipRole: #------------------------------------ TT
 				tt = "Reviewed: " + str(item.get('reviewed'))
 				tt += "\nNormative: " + str(item.get('normative'))
@@ -310,6 +336,7 @@ class RequirementManager(QWidget):
 		self.view = QTableView()
 		self.view.setModel(self.model)
 		self.view.setItemDelegate(self.delegate)
+		
 		# Table appearance
 		self.view.setMinimumSize(1024, 768)
 		self.view.hideColumn(self.model._headerData.index('path'))
@@ -318,12 +345,15 @@ class RequirementManager(QWidget):
 		self.view.hideColumn(self.model._headerData.index('ref'))
 		self.view.hideColumn(self.model._headerData.index('references'))
 		self.view.hideColumn(self.model._headerData.index('links'))
-		self.view.setSelectionMode(QAbstractItemView.SingleSelection)
+		
 		self.view.horizontalHeader().setStretchLastSection(True)
+		self.view.setWordWrap(True)
 		self.view.resizeColumnsToContents()
 		self.view.resizeRowsToContents()
+		self.view.setSelectionMode(QAbstractItemView.SingleSelection)
 		self.view.setHorizontalScrollMode(QAbstractItemView.ScrollPerPixel);
 		self.view.setVerticalScrollMode(QAbstractItemView.ScrollPerPixel);
+		
 		# Buttons
 		reloadBtn = QPushButton("Reload")
 		reloadBtn.clicked.connect(self.model.load)
@@ -363,7 +393,7 @@ class RequirementManager(QWidget):
 			index.model().removeRow(index.row())
 			doorstop_requirement = index.model()._data[index.row()][4]
 			doorstop_item.delete() # doorstop item deletion
-			log.debug("Deleted row:  " + str(index.row()))
+			log.debug("Deleted row:	 " + str(index.row()))
 			log.debug("["+str(self._docId)+"] Deleted requirement " + str(doorstop_requirement))
 		self.model.load()
 		self.model.emit(SIGNAL("layoutChanged()"))
