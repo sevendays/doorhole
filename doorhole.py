@@ -349,6 +349,9 @@ class RequirementManager(QWidget):
 		self.view.horizontalHeader().setStretchLastSection(True)
 		self.view.setWordWrap(True)
 		self.view.resizeColumnsToContents()
+		#self.view.resizeRowsToContents() # this seems to work only for first document tab but is not resizing properly the following tabs
+		header = self.view.verticalHeader()
+		header.setSectionResizeMode(QHeaderView.ResizeToContents)
 		self.view.resizeRowsToContents()
 		self.view.setSelectionMode(QAbstractItemView.SingleSelection)
 		self.view.setHorizontalScrollMode(QAbstractItemView.ScrollPerPixel);
