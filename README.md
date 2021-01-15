@@ -11,10 +11,8 @@ This tool is designed to view and edit doorstop requirements, as fast as possibl
 ```
 pip install doorstop
 pip install PySide2
-pip install plantuml-markdown<=3.2.2
+pip install plantuml-markdown
 ```
-
-(plantuml-markdown is held back by markdown which is held back by doorstop - sorry about that).
 
 2. Download the `doorhole.py` script inside a directory listed in your PATH system variable for easier access
 3. Make it executable
