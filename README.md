@@ -4,6 +4,10 @@ A graphical requirements editor for doorstop: https://github.com/doorstop-dev/do
 
 This tool is designed to view and edit doorstop requirements, as fast as possible.
 
+![immagine](https://user-images.githubusercontent.com/301673/104736138-cdf86c00-5742-11eb-9a24-89f2f3f04da1.png)
+
+
+
 ## Installation
 
 1. Install the required dependencies (Python 3.5+ required by doorstop):
