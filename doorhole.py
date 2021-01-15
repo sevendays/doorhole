@@ -19,7 +19,6 @@ import tempfile
 EXTENSIONS = (
 	'markdown.extensions.extra',
 	'markdown.extensions.sane_lists',
-	'mdx_outline',
 	'mdx_math',
 	PlantUMLMarkdownExtension(
 		server='',#'http://www.plantuml.com/plantuml',
