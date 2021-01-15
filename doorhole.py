@@ -48,6 +48,7 @@ class RequirementsDelegate(QStyledItemDelegate):
 		self.docIndex = None
 		self.h = None
 		self.w = None
+		self.md = markdown.Markdown(extensions=EXTENSIONS)
 
 	def createEditor(self, parent, option, index):
 		if index.model()._headerData[index.column()] == 'text':
@@ -118,7 +119,7 @@ class RequirementsDelegate(QStyledItemDelegate):
 			try:
 				os.path.dirname(os.path.realpath(__file__))
 				os.chdir(item_path) # necessary to solve linked items with relative paths (e.g. images)
-				html = markdown.markdown(text, extensions=EXTENSIONS)
+				html = self.md.convert(text)
 				self.doc.setHtml(html)
 			except Exception as e:
 				warning = '**An error occurred while displaying the content**\n\n: '+ str(e) + '\n\n'
