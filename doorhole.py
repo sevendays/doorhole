@@ -4,7 +4,7 @@
 # Builds functional matrix
 
 import doorstop
-from doorstop.core.types import iter_documents, iter_items
+from doorstop.core.types import iter_documents, iter_items, Level
 import os
 import sys
 from PySide2.QtWidgets import *
@@ -15,6 +15,7 @@ import logging
 import markdown
 from plantuml_markdown import PlantUMLMarkdownExtension
 import tempfile
+import copy
 
 EXTENSIONS = (
 	'markdown.extensions.extra',
@@ -100,10 +101,16 @@ class RequirementsDelegate(QStyledItemDelegate):
 				heading += '#'*level.count('.') + ' ' + level[:-2] + ' '
 				if header.strip(): # use header as heading
 					heading += header.strip() + '\n\n'
-					lines = [heading] + lines
+					if (len(lines)): # append text, if any
+						lines = [heading] + lines
+					else:
+						lines = [heading]
 				else: # use first line as heading
-					heading += lines[0] + '\n\n'
-					lines = [heading] + lines[1:]
+					if len(lines): # ...if any!
+						heading += lines[0] + '\n\n'
+						lines = [heading] + lines[1:]
+					else:
+						lines = [heading]
 			else: # Requirement
 				if header.strip(): # use header as heading
 					heading += '#'*(level.count('.') +1) + ' ' + level + ' ' + header.strip()
@@ -236,7 +243,6 @@ class RequirementSetModel(QAbstractTableModel):
 			if not item.get('normative') or str(item.get('level')).endswith('.0'):
 				return QBrush(QColor('gray'))
 			
-
 	def headerData(self, num, orientation, role=Qt.DisplayRole):
 	
 		if orientation == Qt.Horizontal: # ---------------------- Column header
@@ -296,6 +302,91 @@ class RequirementSetModel(QAbstractTableModel):
 				log.debug('Updated requirement [' + str(item.get('uid')) + '] attribute ['+attr+']')
 			except doorstop.DoorstopError:
 				log.error('Requirement [' + str(item.get('uid')) + '] file not saved - manual edit required: ' + path)
+	
+	def newReq(self, level=None):
+		global reqtree
+		if level is not None:
+			item = reqtree.add_item(value=str(self._docId), level=level)
+			log.debug("["+str(self._docId)+"] Added requirement " + str(item))
+			if item.get('level').heading: # make title items non-normative by default
+				item.set('normative', False)
+			item.set('derived', False) # set 'derived' property to False by default
+			self.load() # reload the whole document
+			self.emit(SIGNAL("layoutChanged()"))
+	
+	def delReq(self, row):
+		global reqtree
+		item = self._data[row][len(self._headerData)]
+		reqid = str(item)
+		item.delete() # doorstop item deletion
+		log.debug("["+str(self._docId)+"] Deleted requirement " + reqid)
+		self.load() # reload the whole document
+		self.emit(SIGNAL("layoutChanged()"))
+
+	def insertRowBefore(self, qidx):
+		row = qidx.row()
+		if row < len(self._data): # clicked requirement actually exists
+			item = self._data[row][len(self._headerData)]
+			new_level = Level(item.get('level')) # just use the level of the clicked req
+			self.newReq(new_level)
+		
+	def insertRowAfter(self, qidx):
+		row = qidx.row()
+		if row < len(self._data): # clicked requirement actually exists
+			item = self._data[row][len(self._headerData)]
+			new_level = self._getSubsequentLevel(item.get('level'))
+			self.newReq(new_level)
+
+	def _getSubsequentLevel(self, level):
+		new_level = Level(level) # create a new object, the '=' operator does a reference
+		if new_level.heading:
+			parts = str(new_level).split('.') # adding +1 to level doesn't work as expected when the level is a heading
+			parts[-1] = 1 # x.x.x.0 --> x.x.x.1
+			new_level = Level(parts)
+		else:
+			new_level += 1
+		return new_level
+		
+	def deactivateRow(self, qidx):
+		row = qidx.row()
+		if row < len(self._data): # clicked requirement actually exists
+			item = self._data[row][len(self._headerData)]
+			item.set('normative', False)
+	
+	def activateRow(self, qidx):
+		row = qidx.row()
+		if row < len(self._data): # clicked requirement actually exists
+			item = self._data[row][len(self._headerData)]
+			item.set('normative', True)
+
+	def deriveRow(self, qidx):
+		row = qidx.row()
+		if row < len(self._data): # clicked requirement actually exists
+			item = self._data[row][len(self._headerData)]
+			item.set('derived', True)
+	
+	def underiveRow(self, qidx):
+		row = qidx.row()
+		if row < len(self._data): # clicked requirement actually exists
+			item = self._data[row][len(self._headerData)]
+			item.set('derived', False)
+
+	def deleteRow(self, qidx):
+		row = qidx.row()
+		if row < len(self._data): # clicked requirement actually exists
+			qm = QMessageBox()
+			qm.setText(str("This will delete the requirement from disk.\nYou will not be able to recover it unless it's versioned.\n\nAre you absolutely sure?"))
+			qm.setStandardButtons(QMessageBox.Yes | QMessageBox.No)
+			ret = qm.exec()
+			if ret == qm.Yes:
+				self.delReq(row)
+	
+	def getItem(self, qidx):
+		row = qidx.row()
+		if row < len(self._data):
+			return self._data[row][len(self._headerData)]
+		else:
+			return None
 
 class RequirementManager(QWidget):
 	'''
@@ -336,6 +427,8 @@ class RequirementManager(QWidget):
 		self.view = QTableView()
 		self.view.setModel(self.model)
 		self.view.setItemDelegate(self.delegate)
+		self.view.setContextMenuPolicy(Qt.CustomContextMenu)
+		self.view.customContextMenuRequested.connect(self.onCustomContextMenuRequested)
 		
 		# Table appearance
 		self.view.setMinimumSize(1024, 768)
@@ -357,46 +450,59 @@ class RequirementManager(QWidget):
 		# Buttons
 		reloadBtn = QPushButton("Reload")
 		reloadBtn.clicked.connect(self.model.load)
-		newReqBtn = QPushButton("Add")
-		newReqBtn.clicked.connect(self.new)
-		delReqBtn = QPushButton("Remove")
-		delReqBtn.clicked.connect(self.delete)
 		# Placement
 		ly = QVBoxLayout()
 		lyBtns = QHBoxLayout()
 		lyBtns.addWidget(reloadBtn)
-		lyBtns.addWidget(newReqBtn)
-		lyBtns.addWidget(delReqBtn)
 		lyBtns.addStretch()
 		ly.addLayout(lyBtns)
 		ly.addWidget(self.view)
 		self.setLayout(ly)
 
-	@Slot()
-	def new(self):
-		global reqtree
-		item = reqtree.add_item(str(self._docId))
-		log.debug("["+str(self._docId)+"] Added requirement " + str(item))
-		# to update the view, a signal needs to be sent
-		self.model.load()
-		self.model.emit(SIGNAL("layoutChanged()"))
+	def onCustomContextMenuRequested(self, pos):
+		menu = QMenu()
+		idx = self.view.indexAt(pos)
+		item = self.model.getItem(idx)
+		if item is not None:
+			addReqBefore = QAction('Add new requirement before '+str(item))
+			addReqBefore.triggered.connect(lambda: self.model.insertRowBefore(idx))
+			menu.addAction(addReqBefore)
 
-	@Slot()
-	def delete(self):
-		index_list = []
-		for model_index in self.view.selectionModel().selectedRows():
-			index = QPersistentModelIndex(model_index)
-			index_list.append(index)
-		global reqtree
-		for index in index_list:
-			doorstop_item = index.model()._data[index.row()][len(index.model()._headerData)]
-			index.model().removeRow(index.row())
-			doorstop_requirement = index.model()._data[index.row()][4]
-			doorstop_item.delete() # doorstop item deletion
-			log.debug("Deleted row:	 " + str(index.row()))
-			log.debug("["+str(self._docId)+"] Deleted requirement " + str(doorstop_requirement))
-		self.model.load()
-		self.model.emit(SIGNAL("layoutChanged()"))
+			addReqAfter = QAction('Add requirement after '+str(item))
+			addReqAfter.triggered.connect(lambda: self.model.insertRowAfter(idx))
+			menu.addAction(addReqAfter)
+			menu.addSeparator()
+
+			if item.get('level').heading == False:
+				if item.get('normative'):
+					deactivateReq = QAction('Make '+str(item)+' not normative')
+					deactivateReq.triggered.connect(lambda: self.model.deactivateRow(idx))
+					deactivateReq.setToolTip("Changes the 'normative' attribute to False.\nNon-normative requirements are informative or are not valid on this specific project.")
+					menu.addAction(deactivateReq)
+				else:
+					activateReq = QAction('Make '+str(item)+' normative')
+					activateReq.triggered.connect(lambda: self.model.activateRow(idx))
+					activateReq.setToolTip("Changes the 'normative' attribute to True.\nNormative requirements must be implemented.")
+					menu.addAction(activateReq)
+
+			if item.get('normative'):
+				if item.get('derived'):
+					setNotDerived = QAction('Make '+str(item)+' not derived')
+					setNotDerived.setToolTip("Changes the 'derived' attribute to False.\nNot derived requirements must have a parent requirement unless they're the top-level requirements.")
+					setNotDerived.triggered.connect(lambda: self.model.underiveRow(idx))
+					menu.addAction(setNotDerived)
+				else:
+					setDerived = QAction('Make '+str(item)+' derived')
+					setDerived.setToolTip("Changes the 'derived' attribute to True.\nDerived requirements don't need to have a parent requirement even if they're not top-level requirements.")
+					setDerived.triggered.connect(lambda: self.model.deriveRow(idx))
+					menu.addAction(setDerived)
+
+		menu.addSeparator()
+		deleteReq = QAction('Delete '+str(item)+' from disk')
+		deleteReq.triggered.connect(lambda: self.model.deleteRow(idx))
+		menu.addAction(deleteReq)
+
+		menu.exec_(self.view.mapToGlobal(pos))
 
 # Main application
 class MainWindow(QMainWindow):
