@@ -22,7 +22,7 @@ EXTENSIONS = (
 	'markdown.extensions.sane_lists',
 	'mdx_math',
 	PlantUMLMarkdownExtension(
-		server='',#'http://www.plantuml.com/plantuml',
+		server='http://www.plantuml.com/plantuml',
 		cachedir=tempfile.gettempdir(),
 		format='svg',
 		classes='class1,class2',
@@ -198,7 +198,8 @@ class RequirementSetModel(QAbstractTableModel):
 		
 		# Non-standard data that we will display in more columns:
 		userHeaderData = set(headerData) - stdHeaderData
-		log.debug('['+str(self._document)+'] Custom requirements attributes: ' + str(userHeaderData))
+		if userHeaderData:
+			log.debug('['+str(self._document)+'] Custom requirements attributes: ' + str(userHeaderData))
 		
 		# And we have now the column names.
 		# We put 'text' always to the last column because it usually is stretched.
@@ -269,7 +270,6 @@ class RequirementSetModel(QAbstractTableModel):
 				return QBrush(QColor('darkGreen')) # OK items
 			if role == Qt.ToolTipRole: #------------------------------------ TT
 				tt = "Reviewed: " + str(item.get('reviewed'))
-				tt += "\nNormative: " + str(item.get('normative'))
 				return tt
 		return QAbstractTableModel.headerData(self, num, orientation, role)
 		
@@ -292,7 +292,6 @@ class RequirementSetModel(QAbstractTableModel):
 			text = int(text)
 		
 		# Strings are left as they are
-		
 		if item.get(attr) != text:
 			try:
 				attributes = { attr : text }
@@ -302,6 +301,7 @@ class RequirementSetModel(QAbstractTableModel):
 				log.debug('Updated requirement [' + str(item.get('uid')) + '] attribute ['+attr+']')
 			except doorstop.DoorstopError:
 				log.error('Requirement [' + str(item.get('uid')) + '] file not saved - manual edit required: ' + path)
+		self.layoutChanged.emit()
 	
 	def newReq(self, level=None):
 		global reqtree
@@ -312,7 +312,7 @@ class RequirementSetModel(QAbstractTableModel):
 				item.set('normative', False)
 			item.set('derived', False) # set 'derived' property to False by default
 			self.load() # reload the whole document
-			self.emit(SIGNAL("layoutChanged()"))
+			self.layoutChanged.emit()
 	
 	def delReq(self, row):
 		global reqtree
@@ -321,7 +321,7 @@ class RequirementSetModel(QAbstractTableModel):
 		item.delete() # doorstop item deletion
 		log.debug("["+str(self._docId)+"] Deleted requirement " + reqid)
 		self.load() # reload the whole document
-		self.emit(SIGNAL("layoutChanged()"))
+		self.layoutChanged.emit()
 
 	def insertRowBefore(self, qidx):
 		row = qidx.row()
@@ -446,11 +446,12 @@ class RequirementManager(QWidget):
 		self.view.setSelectionMode(QAbstractItemView.SingleSelection)
 		self.view.setHorizontalScrollMode(QAbstractItemView.ScrollPerPixel);
 		self.view.setVerticalScrollMode(QAbstractItemView.ScrollPerPixel);
-		
+
 		# Buttons
 		reloadBtn = QPushButton("Reload")
 		reloadBtn.clicked.connect(self.model.load)
 		# Placement
+
 		ly = QVBoxLayout()
 		lyBtns = QHBoxLayout()
 		lyBtns.addWidget(reloadBtn)
@@ -468,7 +469,7 @@ class RequirementManager(QWidget):
 			addReqBefore.triggered.connect(lambda: self.model.insertRowBefore(idx))
 			menu.addAction(addReqBefore)
 
-			addReqAfter = QAction('Add requirement after '+str(item))
+			addReqAfter = QAction('Add new requirement after '+str(item))
 			addReqAfter.triggered.connect(lambda: self.model.insertRowAfter(idx))
 			menu.addAction(addReqAfter)
 			menu.addSeparator()
