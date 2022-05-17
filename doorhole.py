@@ -444,8 +444,9 @@ class RequirementManager(QWidget):
 		self.view.resizeColumnsToContents()
 		self.view.verticalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
 		self.view.setSelectionMode(QAbstractItemView.SingleSelection)
-		self.view.setHorizontalScrollMode(QAbstractItemView.ScrollPerPixel);
-		self.view.setVerticalScrollMode(QAbstractItemView.ScrollPerPixel);
+		self.view.setHorizontalScrollMode(QAbstractItemView.ScrollPerPixel)
+		self.view.setVerticalScrollMode(QAbstractItemView.ScrollPerPixel) # only has effect on the scrollbar dragging
+		self.view.verticalScrollBar().setSingleStep(15) # mouse wheel scrolling: restricted to 15px per "click"
 
 		# Buttons
 		reloadBtn = QPushButton("Reload")
