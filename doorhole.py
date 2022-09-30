@@ -20,7 +20,6 @@ import copy
 EXTENSIONS = (
 	'markdown.extensions.extra',
 	'markdown.extensions.sane_lists',
-	'mdx_math',
 	PlantUMLMarkdownExtension(
 		server='http://www.plantuml.com/plantuml',
 		cachedir=tempfile.gettempdir(),
