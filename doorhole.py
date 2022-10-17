@@ -7,10 +7,10 @@ import doorstop
 from doorstop.core.types import iter_documents, iter_items, Level
 import os
 import sys
-from PySide2.QtWidgets import *
-from PySide2.QtCore import *
-from PySide2.QtGui import *
-from PySide2.QtWebEngineWidgets import *
+from PySide6.QtWidgets import *
+from PySide6.QtCore import *
+from PySide6.QtGui import *
+from PySide6.QtWebEngineWidgets import *
 import logging
 import markdown
 from plantuml_markdown import PlantUMLMarkdownExtension
@@ -503,7 +503,7 @@ class RequirementManager(QWidget):
 		deleteReq.triggered.connect(lambda: self.model.deleteRow(idx))
 		menu.addAction(deleteReq)
 
-		menu.exec_(self.view.mapToGlobal(pos))
+		menu.exec(self.view.mapToGlobal(pos))
 
 # Main application
 class MainWindow(QMainWindow):
@@ -539,4 +539,4 @@ if __name__ == "__main__":
 	app = QApplication(sys.argv)
 	win = MainWindow()
 	win.show()
-	sys.exit(app.exec_())
+	sys.exit(app.exec())
