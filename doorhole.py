@@ -377,7 +377,7 @@ class RequirementSetModel(QAbstractTableModel):
 			qm.setText(str("This will delete the requirement from disk.\nYou will not be able to recover it unless it's versioned.\n\nAre you absolutely sure?"))
 			qm.setStandardButtons(QMessageBox.Yes | QMessageBox.No)
 			ret = qm.exec()
-			if ret == QMessageBox.StandardButtons.Yes.value:
+			if ret == QMessageBox.Yes:
 				self.delReq(row)
 	
 	def getItem(self, qidx):
