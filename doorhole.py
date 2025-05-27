@@ -53,14 +53,22 @@ class RequirementsDelegate(QStyledItemDelegate):
 	def createEditor(self, parent, option, index):
 		if index.model()._headerData[index.column()] == 'text':
 			edit = QPlainTextEdit(parent)
+			# set fixed font
 			fixed_font = QFontDatabase.systemFont(QFontDatabase.FixedFont)
 			fixed_font.setStyleHint(QFont.TypeWriter)
 			edit.setFont(fixed_font)
+			# set colors
+			edit.setStyleSheet("""
+			QPlainTextEdit {
+			color: black;
+			background: white;
+			}
+			""")
 			return edit
 		return super(RequirementsDelegate, self).createEditor(parent, option, index) # editor chosen with the QtEditRole in model.data()
 
 	def setEditorData(self, editor, index):
-		if index.model()._headerData[index.column()] == 'text': 
+		if index.model()._headerData[index.column()] == 'text':
 			editor.insertPlainText(index.data())
 		if index.model()._headerData[index.column()] == 'level': # would create an empty QLineEdit otherwise
 			editor.setText(index.data())
@@ -68,7 +76,7 @@ class RequirementsDelegate(QStyledItemDelegate):
 
 	def setModelData(self, editor, model, index): # called after closing the editor
 		# We need to extract a value. Possible editors: https://doc.qt.io/qtforpython/PySide2/QtWidgets/QItemEditorFactory.html
-		
+
 		# There ought to be be a better way.
 		editorType = str(type(editor))
 		if 'QComboBox' in editorType:
@@ -77,11 +85,11 @@ class RequirementsDelegate(QStyledItemDelegate):
 			model.setData(index, editor.text())
 		elif 'QPlainTextEdit' in editorType:
 			model.setData(index, editor.toPlainText())
-	
+
 	def getDoc(self, option, index): # builds the doc inside self.doc, uses self.index as cache
 		if self.docIndex == index: # Doc already done
 			return
-		
+
 		# a new doc is to be rendered
 		self.docIndex = index
 		mdl = index.model()
@@ -92,7 +100,7 @@ class RequirementsDelegate(QStyledItemDelegate):
 			header = str(item.get('header'))
 			item_path = item.get('path') # doorstop property 'root' from DS item
 			item_path = os.path.dirname(os.path.realpath(item_path))
-			
+
 			# mimick DS title and header attributes
 			lines = [l for l in text.splitlines()]
 			heading = ''
@@ -132,7 +140,7 @@ class RequirementsDelegate(QStyledItemDelegate):
 				text = warning + text
 				self.doc.setMarkdown(text)
 			os.chdir(cwd_bkp)
-			
+
 			# Document should be restricted to column width
 			options = QStyleOptionViewItem(option)
 			self.doc.setTextWidth(options.rect.width())
@@ -172,7 +180,7 @@ class RequirementSetModel(QAbstractTableModel):
 	def load(self):
 		global reqtree
 		self._document = reqtree.find_document(self._docId)
-		
+
 		# Requirements attributes
 		# -----------------------
 		#
@@ -186,25 +194,25 @@ class RequirementSetModel(QAbstractTableModel):
 		#
 		# Attribute names are the keys of items[x]._data
 		# We do a first loop to gather all user-defined attributes
-		
+
 		# Standard data (pulled from doorstop.item inspection)
 		stdHeaderData = {'path', 'root', 'active', 'normative', 'uid', 'level', 'header', 'text', 'derived', 'ref', 'references', 'reviewed', 'links'}
-		
+
 		headerData =  []
 		for item in iter_items(self._document):
 			headerData += list(item._data.keys())
 			headerData = list(set(headerData)) # drop duplicates
-		
+
 		# Non-standard data that we will display in more columns:
 		userHeaderData = set(headerData) - stdHeaderData
 		if userHeaderData:
 			log.debug('['+str(self._document)+'] Custom requirements attributes: ' + str(userHeaderData))
-		
+
 		# And we have now the column names.
 		# We put 'text' always to the last column because it usually is stretched.
 		# The 'active' field is always true - inactive requirements are not shown at all. Doorstop doesn't tell us about them.
 		self._headerData = ['uid', 'path', 'root', 'normative', 'derived', 'reviewed', 'level', 'header', 'ref', 'references', 'links'] + list(userHeaderData) + ['text']
-		
+
 		# Another loop to fill in the table rows
 		self._data = []
 		for item in iter_items(self._document):
@@ -218,33 +226,33 @@ class RequirementSetModel(QAbstractTableModel):
 	# TableView methods that must be implemented
 	def rowCount(self, index):
 		return len(self._data)
-	
+
 	def columnCount(self, index):
 		return len(self._headerData)
 
 	def data(self, index, role=Qt.DisplayRole):
 		if not index.isValid():
 			return None
-			
+
 		item = self._data[index.row()][len(self._headerData)]
 		colName = self._headerData[index.column()]
-		
+
 		if role == Qt.DisplayRole: #------------------------------------- Value
 			return str(item.get(colName))
-		
+
 		if role == Qt.EditRole:
 			return item.get(colName)
 
 		if role == Qt.BackgroundRole: #------------------------------------- BG
 			if not item.get('normative') or str(item.get('level')).endswith('.0'):
 				return QBrush(QColor('lightGray'))
-		
+
 		if role == Qt.ForegroundRole: #------------------------------------- FG
 			if not item.get('normative') or str(item.get('level')).endswith('.0'):
 				return QBrush(QColor('gray'))
-			
+
 	def headerData(self, num, orientation, role=Qt.DisplayRole):
-	
+
 		if orientation == Qt.Horizontal: # ---------------------- Column header
 			if role == Qt.DisplayRole: #--------------------------------- Value
 				return self._headerData[num]
@@ -252,7 +260,7 @@ class RequirementSetModel(QAbstractTableModel):
 				# custom attributes: blue
 				if num > 10 and num < len(self._headerData) - 1:
 					return QBrush(QColor('blue'))
-					
+
 		if orientation == Qt.Vertical: #---------------------------- Row header
 			item = self._data[num][len(self._headerData)]
 			if role == Qt.DisplayRole: #--------------------------------- Value
@@ -260,7 +268,7 @@ class RequirementSetModel(QAbstractTableModel):
 			if role == Qt.ForegroundRole: #--------------------------------- FG
 				# wrong items: red (TODO)
 				# unreviewed items: orange
-				if not item.get('reviewed'): 
+				if not item.get('reviewed'):
 					return QBrush(QColor('orange'))
 				# non-normative items: gray
 				if not item.get('normative') or str(item.get('level')).endswith('.0'): # non-normative items: dark gray
@@ -271,25 +279,25 @@ class RequirementSetModel(QAbstractTableModel):
 				tt = "Reviewed: " + str(item.get('reviewed'))
 				return tt
 		return QAbstractTableModel.headerData(self, num, orientation, role)
-		
+
 	def flags(self, index):
 			return Qt.ItemIsEditable | Qt.ItemIsEnabled | Qt.ItemIsSelectable
 
 	def setData(self, index, text):
 		item = self._data[index.row()][len(self._headerData)]
 		attr = self._headerData[index.column()]
-		
+
 		# Boolean values are passed as "True" or "False" strings, so we need to determine whether the original datatype was boolean.
 		if type(item.get(attr)) == bool:
 			if text == 'True':
 				text = True
 			else:
 				text = False
-		
+
 		# Integer values are passed as strings, so we need to convert back to integer
 		if type(item.get(attr)) == int:
 			text = int(text)
-		
+
 		# Strings are left as they are
 		if item.get(attr) != text:
 			try:
@@ -301,7 +309,7 @@ class RequirementSetModel(QAbstractTableModel):
 			except doorstop.DoorstopError:
 				log.error('Requirement [' + str(item.get('uid')) + '] file not saved - manual edit required: ' + path)
 		self.layoutChanged.emit()
-	
+
 	def newReq(self, level=None):
 		global reqtree
 		if level is not None:
@@ -312,7 +320,7 @@ class RequirementSetModel(QAbstractTableModel):
 			item.set('derived', False) # set 'derived' property to False by default
 			self.load() # reload the whole document
 			self.layoutChanged.emit()
-	
+
 	def delReq(self, row):
 		global reqtree
 		item = self._data[row][len(self._headerData)]
@@ -328,7 +336,7 @@ class RequirementSetModel(QAbstractTableModel):
 			item = self._data[row][len(self._headerData)]
 			new_level = Level(item.get('level')) # just use the level of the clicked req
 			self.newReq(new_level)
-		
+
 	def insertRowAfter(self, qidx):
 		row = qidx.row()
 		if row < len(self._data): # clicked requirement actually exists
@@ -345,13 +353,13 @@ class RequirementSetModel(QAbstractTableModel):
 		else:
 			new_level += 1
 		return new_level
-		
+
 	def deactivateRow(self, qidx):
 		row = qidx.row()
 		if row < len(self._data): # clicked requirement actually exists
 			item = self._data[row][len(self._headerData)]
 			item.set('normative', False)
-	
+
 	def activateRow(self, qidx):
 		row = qidx.row()
 		if row < len(self._data): # clicked requirement actually exists
@@ -363,7 +371,7 @@ class RequirementSetModel(QAbstractTableModel):
 		if row < len(self._data): # clicked requirement actually exists
 			item = self._data[row][len(self._headerData)]
 			item.set('derived', True)
-	
+
 	def underiveRow(self, qidx):
 		row = qidx.row()
 		if row < len(self._data): # clicked requirement actually exists
@@ -379,7 +387,7 @@ class RequirementSetModel(QAbstractTableModel):
 			ret = qm.exec()
 			if ret == QMessageBox.Yes:
 				self.delReq(row)
-	
+
 	def getItem(self, qidx):
 		row = qidx.row()
 		if row < len(self._data):
@@ -428,7 +436,7 @@ class RequirementManager(QWidget):
 		self.view.setItemDelegate(self.delegate)
 		self.view.setContextMenuPolicy(Qt.CustomContextMenu)
 		self.view.customContextMenuRequested.connect(self.onCustomContextMenuRequested)
-		
+
 		# Table appearance
 		self.view.setMinimumSize(1024, 768)
 		self.view.hideColumn(self.model._headerData.index('path'))
@@ -437,7 +445,7 @@ class RequirementManager(QWidget):
 		self.view.hideColumn(self.model._headerData.index('ref'))
 		self.view.hideColumn(self.model._headerData.index('references'))
 		self.view.hideColumn(self.model._headerData.index('links'))
-		
+
 		self.view.horizontalHeader().setStretchLastSection(True)
 		self.view.setWordWrap(True)
 		self.view.resizeColumnsToContents()
