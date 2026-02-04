@@ -42,6 +42,13 @@ log = logger(__name__)
 reqtree = None
 
 class RequirementsDelegate(QStyledItemDelegate):
+	# Constants
+	MIN_TEXT_WIDTH = 200  # Minimum width for the text column
+	INDENT_PER_LEVEL = 20  # Pixels per level of indentation
+
+	# Instance Variables
+	indentTextByLevel = False  # Option to enable/disable indentation
+	
 	def __init__(self, parent=None):
 		super(RequirementsDelegate, self).__init__(parent)
 		self.doc = QTextDocument(self)
@@ -185,10 +192,26 @@ class RequirementsDelegate(QStyledItemDelegate):
 		if mdl._headerData[index.column()] == 'text':
 			# get rich text document and paint it
 			self.getDoc(option, index)
+			# Calculate indentation based on level
+			indent = 0
+			available_width = option.rect.width()
+			if self.indentTextByLevel:
+				item = mdl._data[index.row()][len(mdl._headerData)]
+				level_str = str(item.get('level'))
+				try:
+					level_depth = level_str.count('.')
+				except Exception:
+					level_depth = 0
+				indent = self.INDENT_PER_LEVEL * level_depth
+				available_width = option.rect.width() - indent
+				if available_width < self.MIN_TEXT_WIDTH:
+					indent = max(0, option.rect.width() - self.MIN_TEXT_WIDTH)
+					available_width = self.MIN_TEXT_WIDTH
 			ctx = QAbstractTextDocumentLayout.PaintContext()
 			painter.save()
-			painter.translate(option.rect.topLeft());
-			painter.setClipRect(option.rect.translated(-option.rect.topLeft()))
+			painter.translate(option.rect.topLeft() + QPoint(indent, 0))
+			painter.setClipRect(option.rect.translated(-option.rect.topLeft() - QPoint(indent, 0)))
+			self.doc.setTextWidth(available_width)
 			self.doc.documentLayout().draw(painter, ctx)
 			painter.restore()
 		else:
@@ -197,10 +220,28 @@ class RequirementsDelegate(QStyledItemDelegate):
 	def sizeHint(self, option, index):
 		mdl = index.model()
 		if mdl._headerData[index.column()] == 'text':
-			# get rich text document and size it
 			self.getDoc(option, index)
-			#log.debug(mdl._headerData[index.column()] + "\t W: " + str(self.doc.idealWidth()) + " H: " +  str(self.doc.size().height()))
-			return QSize(self.doc.idealWidth(), self.doc.size().height())
+			indent = 0
+			available_width = option.rect.width()
+			if self.indentTextByLevel:
+				item = mdl._data[index.row()][len(mdl._headerData)]
+				level_str = str(item.get('level'))
+				try:
+					level_depth = level_str.count('.')
+
+					# Doorstop usually uses depth=1.0 for base requirement
+					# Decrement by 1 to handle this
+					if level_depth < 0:
+						level_depth = level_depth - 1
+				except Exception:
+					level_depth = 0
+				indent = self.INDENT_PER_LEVEL * level_depth
+				available_width = option.rect.width() - indent
+				if available_width < self.MIN_TEXT_WIDTH:
+					indent = max(0, option.rect.width() - self.MIN_TEXT_WIDTH)
+					available_width = self.MIN_TEXT_WIDTH
+			self.doc.setTextWidth(available_width)
+			return QSize(self.doc.idealWidth() + indent, self.doc.size().height())
 		else:
 			return QSize(0,0)
 			#super(RequirementsDelegate, self).sizeHint(option, index)
@@ -543,6 +584,12 @@ class RequirementManager(QWidget):
 		self.view.setVerticalScrollMode(QAbstractItemView.ScrollPerPixel) # only has effect on the scrollbar dragging
 		self.view.verticalScrollBar().setSingleStep(15) # mouse wheel scrolling: restricted to 15px per "click"
 
+		# Indentation toggle
+		self.indentToggle = QCheckBox("Indent text column by level")
+		self.indentToggle.setChecked(self.delegate.indentTextByLevel)
+		self.indentToggle.setToolTip("Toggle indentation of the text column based on requirement level.")
+		self.indentToggle.stateChanged.connect(self.onIndentToggleChanged)
+
 		# Buttons
 		reloadBtn = QPushButton("Reload")
 		reloadBtn.clicked.connect(self.model.load)
@@ -561,17 +608,26 @@ class RequirementManager(QWidget):
 		# Connect selection changes to enable/disable remove button
 		self.view.selectionModel().selectionChanged.connect(self.onSelectionChanged)
 		self.onSelectionChanged()  # Initial state
-		
+
+		# Spacer
+		spacer = QSpacerItem(10, 30)
+
 		# Placement
 		ly = QVBoxLayout()
 		lyBtns = QHBoxLayout()
 		lyBtns.addWidget(reloadBtn)
 		lyBtns.addWidget(addBtn)
 		lyBtns.addWidget(removeBtn)
+		lyBtns.addSpacerItem(spacer)
+		lyBtns.addWidget(self.indentToggle)
 		lyBtns.addStretch()
 		ly.addLayout(lyBtns)
 		ly.addWidget(self.view)
 		self.setLayout(ly)
+
+	def onIndentToggleChanged(self, state):
+		self.delegate.indentTextByLevel = bool(state)
+		self.view.viewport().update()
 
 	def onAddClicked(self):
 		"""Handle Add button click - adds a new requirement after the selected item, or at the end."""
