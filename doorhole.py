@@ -200,6 +200,9 @@ class RequirementsDelegate(QStyledItemDelegate):
 				level_str = str(item.get('level'))
 				try:
 					level_depth = level_str.count('.')
+					# handle the x.0 edge case
+					if level_str.endswith(".0"):
+						level_depth = level_depth - 1
 				except Exception:
 					level_depth = 0
 				indent = self.INDENT_PER_LEVEL * level_depth
@@ -228,10 +231,8 @@ class RequirementsDelegate(QStyledItemDelegate):
 				level_str = str(item.get('level'))
 				try:
 					level_depth = level_str.count('.')
-
-					# Doorstop usually uses depth=1.0 for base requirement
-					# Decrement by 1 to handle this
-					if level_depth < 0:
+					# handle the x.0 edge case
+					if level_str.endswith(".0"):
 						level_depth = level_depth - 1
 				except Exception:
 					level_depth = 0
