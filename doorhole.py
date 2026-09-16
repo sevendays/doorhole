@@ -45,6 +45,20 @@ class RequirementsDelegate(QStyledItemDelegate):
 	# Constants
 	MIN_TEXT_WIDTH = 200  # Minimum width for the text column
 	INDENT_PER_LEVEL = 20  # Pixels per level of indentation
+	_DOCUMENT_CSS = """
+		table {
+			border-collapse: collapse;
+			margin: 6px 0;
+		}
+		th, td {
+			border: 1px solid #999999;
+			padding: 4px 8px;
+		}
+		th {
+			background-color: #e8e8e8;
+			font-weight: bold;
+		}
+	"""
 
 	# Instance Variables
 	indentTextByLevel = False  # Option to enable/disable indentation
@@ -55,6 +69,7 @@ class RequirementsDelegate(QStyledItemDelegate):
 		self.docIndex = None
 		self.h = None
 		self.w = None
+		self.doc.setDefaultStyleSheet(self._DOCUMENT_CSS)
 		self.md = markdown.Markdown(extensions=EXTENSIONS)
 
 	def createEditor(self, parent, option, index):
@@ -176,6 +191,7 @@ class RequirementsDelegate(QStyledItemDelegate):
 				os.path.dirname(os.path.realpath(__file__))
 				os.chdir(item_path) # necessary to solve linked items with relative paths (e.g. images)
 				html = self.md.convert(text)
+				log.debug(f"Rendered HTML for {item.uid}:\n{html}")
 				self.doc.setHtml(html)
 			except Exception as e:
 				warning = '**An error occurred while displaying the content**\n\n: '+ str(e) + '\n\n'
