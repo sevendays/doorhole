@@ -41,10 +41,141 @@ log = logger(__name__)
 # Maybe it should become a singleton.
 reqtree = None
 
+def build_child_links_index():
+	"""Scan the entire requirements tree and build a mapping from a UID (str)
+	to the list of UIDs (str) of items that declare it as a parent link."""
+	global reqtree
+	index = {}
+	for document in reqtree:
+		for item in iter_items(document):
+			child_uid = str(item.uid).strip()
+			for link in (item.links or []):
+				parent_uid = str(link).strip()
+				index.setdefault(parent_uid, []).append(child_uid)
+	return index
+
+class LinksDelegate(QStyledItemDelegate):
+	"""Custom delegate for rendering clickable links in the 'links' column."""
+
+	LINK_COLUMN_NAMES = ('links', 'childlinks')
+
+	def __init__(self, parent=None):
+		super(LinksDelegate, self).__init__(parent)
+		self.doc = QTextDocument(self)
+		self._currentCacheKey = None
+
+	def getDoc(self, option, index, linksList):
+		width = option.rect.width()
+		cache_key = (index.row(), tuple(linksList), width)
+		if self._currentCacheKey == cache_key:
+			return
+		self._currentCacheKey = cache_key
+		html = '<html><body style="margin: 4px;">'
+		for uid in linksList:
+			if uid:
+				html += f'<a href="link:{uid}" style="color: blue; text-decoration: underline;">{uid}</a><br/>'
+		html += '</body></html>'
+		self.doc.setHtml(html)
+		self.doc.setTextWidth(width)
+		
+	def paint(self, painter, option, index):
+		mdl = index.model()
+		if mdl._headerData[index.column()] in self.LINK_COLUMN_NAMES:
+			links_data = mdl._data[index.row()][index.column()]
+			linksList = self.parseLinks(links_data)
+			self.getDoc(option, index, linksList)
+			ctx = QAbstractTextDocumentLayout.PaintContext()
+			painter.save()
+			painter.translate(option.rect.topLeft())
+			painter.setClipRect(option.rect.translated(-option.rect.topLeft()))
+			self.doc.documentLayout().draw(painter, ctx)
+			painter.restore()
+		else:
+			super(LinksDelegate, self).paint(painter, option, index)
+
+	def sizeHint(self, option, index):
+		mdl = index.model()
+		if mdl._headerData[index.column()] in self.LINK_COLUMN_NAMES:
+			links_data = mdl._data[index.row()][index.column()]
+			linksList = self.parseLinks(links_data)
+			self.getDoc(option, index, linksList)
+			return QSize(self.doc.idealWidth(), self.doc.size().height())
+		return super(LinksDelegate, self).sizeHint(option, index)
+
+	def parseLinks(self, links_data):
+		"""Parse links data into a list of UIDs.
+		
+		Doorstop links format: UID(<uid>
+		stamp=<stamp>)
+		Example: UID(SysR-002
+		stamp=mcidGMWQFubYs9jDkGkCaoHchg3-41N0HMTToh_AiBl=)
+		Multiple links are separated by newlines or commas.
+		"""
+		if not links_data or links_data == 'None' or links_data == '[]':
+			return []
+
+		if 'UID(' not in links_data:
+			# Einfaches Format: Komma-getrennte UIDs (z.B. berechnete Child-Links)
+			raw = links_data.strip('[]').replace("'", '')
+			uids = [u.strip().rstrip(',') for u in raw.replace('\n', ',').split(',')]
+			return [u for u in uids if u]
+
+		# Remove list brackets if present
+		links_data = links_data.strip('[]').replace("'", '')
+		
+		uids = []
+		# Find all occurrences of "UID(" and extract the UID
+		idx = 0
+		while True:
+			pos = links_data.find('UID(', idx)
+			if pos == -1:
+				break
+			# Find the closing parenthesis
+			end_pos = links_data.find(')', pos)
+			if end_pos == -1:
+				break
+			# Extract content between "UID(" and ")"
+			content = links_data[pos+4:end_pos]
+			# Extract UID (everything before " stamp=" or newline)
+			stamp_pos = content.find(' stamp=')
+			newline_pos = content.find('\n')
+			if stamp_pos != -1:
+				uid = content[:stamp_pos].strip().rstrip(',')
+			elif newline_pos != -1:
+				uid = content[:newline_pos].strip().rstrip(',')
+			else:
+				uid = content.strip().rstrip(',')
+			if uid and uid not in uids:
+				uids.append(uid)
+			idx = end_pos + 1
+		
+		return uids
+
+	def getLinkAtPos(self, pos):
+		"""Get the link URL at the given position, if any."""
+		anchor = self.doc.documentLayout().anchorAt(pos)
+		if anchor.startswith('link:'):
+			return anchor[5:]  # Remove 'link:' prefix
+		return None
+
 class RequirementsDelegate(QStyledItemDelegate):
 	# Constants
 	MIN_TEXT_WIDTH = 200  # Minimum width for the text column
 	INDENT_PER_LEVEL = 20  # Pixels per level of indentation
+	_DOCUMENT_CSS = """
+		table {
+			border-collapse: collapse;
+			margin: 6px 0;
+		}
+		th, td {
+			border: 1px solid #999999;
+			padding: 4px 8px;
+		}
+		th {
+			background-color: #e8e8e8;
+			font-weight: bold;
+		}
+	"""
 
 	# Instance Variables
 	indentTextByLevel = False  # Option to enable/disable indentation
@@ -52,44 +183,47 @@ class RequirementsDelegate(QStyledItemDelegate):
 	def __init__(self, parent=None):
 		super(RequirementsDelegate, self).__init__(parent)
 		self.doc = QTextDocument(self)
-		self.docIndex = None
-		self.h = None
-		self.w = None
+		self.doc.setDefaultStyleSheet(self._DOCUMENT_CSS)
 		self.md = markdown.Markdown(extensions=EXTENSIONS)
+		self._htmlCache = {}  # key: (uid, text_hash, width) -> html string
+		self._currentCacheKey = None
 
 	def createEditor(self, parent, option, index):
-		colName = index.model()._headerData[index.column()]
-		
+		mdl = index.model()
+		colName = mdl._headerData[index.column()]
+
 		if colName == 'text':
 			edit = QPlainTextEdit(parent)
-			# set fixed font
 			fixed_font = QFontDatabase.systemFont(QFontDatabase.FixedFont)
 			fixed_font.setStyleHint(QFont.TypeWriter)
 			edit.setFont(fixed_font)
-			# set colors
 			edit.setStyleSheet("""
-			QPlainTextEdit {
-			color: black;
-			background: white;
-			}
+				QPlainTextEdit {
+					color: black;
+					background: white;
+				}
 			""")
 			return edit
-		
-		# Handle boolean columns with a custom combo box that has opaque background
-		item = index.model()._data[index.row()][len(index.model()._headerData)]
-		if colName in ('normative', 'derived') or isinstance(item.get(colName), bool):
-			combo = QComboBox(parent)
-			combo.addItems(['True', 'False'])
-			# Use base color from palette for opaque background (works with light/dark mode)
-			palette = combo.palette()
-			bg_color = option.palette.color(QPalette.Base)
-			palette.setColor(QPalette.Base, bg_color)
-			combo.setPalette(palette)
-			combo.setAutoFillBackground(True)
-			return combo
-		
-		return super(RequirementsDelegate, self).createEditor(parent, option, index) # editor chosen with the QtEditRole in model.data()
-	
+
+		item = mdl._data[index.row()][len(mdl._headerData)]
+		value = item.get(colName)
+
+		# Generischer Check statt hartcodierter Spaltennamen: erfasst automatisch
+		# ALLE booleschen Attribute (normative, derived, reviewed, ggf. zukünftige
+		# Custom-Attribute), nicht nur eine feste Liste.
+		if isinstance(value, bool):
+			edit = QComboBox(parent)
+			edit.addItems(['True', 'False'])
+			return edit
+
+		if colName == 'level':
+			# Level-Objekte werden von Qts Standard-Editor-Factory nicht erkannt
+			# (kein registrierter Editor für diesen Python-Typ), daher explizit
+			# ein einfaches QLineEdit erzwingen.
+			return QLineEdit(parent)
+
+		return super(RequirementsDelegate, self).createEditor(parent, option, index)
+
 	def updateEditorGeometry(self, editor, option, index):
 		"""Ensure editor fills the cell properly to cover underlying text."""
 		# Ensure combo boxes fill the entire cell rectangle
@@ -128,65 +262,80 @@ class RequirementsDelegate(QStyledItemDelegate):
 		elif 'QPlainTextEdit' in editorType:
 			model.setData(index, editor.toPlainText())
 
-	def getDoc(self, option, index): # builds the doc inside self.doc, uses self.index as cache
-		if self.docIndex == index: # Doc already done
+	def getDoc(self, option, index):
+		mdl = index.model()
+		if mdl._headerData[index.column()] != 'text':
+			return
+		item = mdl._data[index.row()][len(mdl._headerData)]
+		width = option.rect.width()
+		cache_key = (str(item.uid), hash(item.get('text')), width)
+
+		if self._currentCacheKey == cache_key:
 			return
 
-		# a new doc is to be rendered
-		self.docIndex = index
-		mdl = index.model()
-		if mdl._headerData[index.column()] == 'text':
-			item = mdl._data[index.row()][len(mdl._headerData)] # DS item cached in last column
+		item_path = item.get('path')
+		item_path = os.path.dirname(os.path.realpath(item_path))
+
+		item_path = item.get('path')
+		item_path = os.path.dirname(os.path.realpath(item_path))
+
+		if cache_key in self._htmlCache:
+			cached = self._htmlCache[cache_key]
+		else:
 			text = item.get('text')
 			level = str(item.get('level'))
 			header = str(item.get('header'))
-			item_path = item.get('path') # doorstop property 'root' from DS item
-			item_path = os.path.dirname(os.path.realpath(item_path))
 
-			# mimick DS title and header attributes
 			lines = [l for l in text.splitlines()]
 			heading = ''
-			if level.endswith('.0'): # Chapter title
+			if level.endswith('.0'):
 				heading += '#'*level.count('.') + ' ' + level[:-2] + ' '
-				if header.strip(): # use header as heading
+				if header.strip():
 					heading += header.strip() + '\n\n'
-					if (len(lines)): # append text, if any
-						lines = [heading] + lines
-					else:
-						lines = [heading]
-				else: # use first line as heading
-					if len(lines): # ...if any!
+					lines = [heading] + lines if len(lines) else [heading]
+				else:
+					if len(lines):
 						heading += lines[0] + '\n\n'
 						lines = [heading] + lines[1:]
 					else:
 						lines = [heading]
-			else: # Requirement
-				if header.strip(): # use header as heading
+			else:
+				if header.strip():
 					heading += '#'*(level.count('.') +1) + ' ' + level + ' ' + header.strip()
 					if item.normative:
 						heading += ' (' + str(item.uid) + ')'
-				else: # use UID as heading
+				else:
 					heading += '#'*(level.count('.') +1) + ' ' + level + ' ' + str(item.uid)
 				lines = [heading] + lines
-			text = '\n'.join(lines)
+				text = '\n'.join(lines)
 
-			# change work dir to where the reqs are stored, otherwise images will not be rendered
 			cwd_bkp = os.getcwd()
 			try:
-				os.path.dirname(os.path.realpath(__file__))
-				os.chdir(item_path) # necessary to solve linked items with relative paths (e.g. images)
+				os.chdir(item_path)  # bleibt wegen PlantUML-Extension nötig (Cache-Dir etc.)
 				html = self.md.convert(text)
-				self.doc.setHtml(html)
+				cached = ('html', html)
 			except Exception as e:
-				warning = '**An error occurred while displaying the content**\n\n: '+ str(e) + '\n\n'
+				warning = '**An error occurred while displaying the content**\n\n: ' + str(e) + '\n\n'
 				text = warning + text
-				self.doc.setMarkdown(text)
-			os.chdir(cwd_bkp)
+				cached = ('md', text)
+			finally:
+				os.chdir(cwd_bkp)
 
-			# Document should be restricted to column width
-			options = QStyleOptionViewItem(option)
-			self.doc.setTextWidth(options.rect.width())
+			self._htmlCache[cache_key] = cached
 
+		self._currentCacheKey = cache_key
+
+		# WICHTIG: Basis-URL setzen, damit relative Bildpfade IMMER korrekt aufgelöst
+		# werden - unabhängig von CWD, Timing, Cache-Hit/Miss oder Lazy-Loading durch Qt.
+		self.doc.setBaseUrl(QUrl.fromLocalFile(item_path + os.sep))
+
+		kind, content = cached
+		if kind == 'html':
+			self.doc.setHtml(content)
+		else:
+			self.doc.setMarkdown(content)
+		self.doc.setTextWidth(width)
+				
 	def paint(self, painter, option, index):
 		mdl = index.model()
 		if mdl._headerData[index.column()] == 'text':
@@ -248,6 +397,15 @@ class RequirementsDelegate(QStyledItemDelegate):
 			#super(RequirementsDelegate, self).sizeHint(option, index)
 
 class RequirementSetModel(QAbstractTableModel):
+	# Standard-Spalten, die immer vorne stehen (fest definiert statt Magic Numbers)
+	_STANDARD_LEADING = ['uid', 'path', 'root', 'normative', 'derived', 'reviewed',
+							'level', 'header', 'ref', 'references', 'links', 'childlinks']
+
+	_DISPLAY_NAMES = {
+		'links': 'Parent Links',
+		'childlinks': 'Child Links',
+	}
+
 	def __init__(self, docId=None, parent=None):
 		super(RequirementSetModel, self).__init__(parent)
 		self._docId = docId
@@ -271,40 +429,42 @@ class RequirementSetModel(QAbstractTableModel):
 		#
 		# Attribute names are the keys of items[x].data (doorstop 3.x public API)
 		# We do a first loop to gather all user-defined attributes
+		stdHeaderData = {'path', 'root', 'active', 'normative', 'uid', 'level',
+							'header', 'text', 'derived', 'ref', 'references', 'reviewed', 'links'}
 
-		# Standard data (pulled from doorstop.item inspection)
-		stdHeaderData = {'path', 'root', 'active', 'normative', 'uid', 'level', 'header', 'text', 'derived', 'ref', 'references', 'reviewed', 'links'}
-
-		headerData =  []
+		headerData = []
 		for item in iter_items(self._document):
 			headerData += list(item.data.keys())
 			headerData = list(set(headerData)) # drop duplicates
 
-		# Non-standard data that we will display in more columns:
 		userHeaderData = set(headerData) - stdHeaderData
 		if userHeaderData:
 			log.debug('['+str(self._document)+'] Custom requirements attributes: ' + str(userHeaderData))
 
-		# And we have now the column names.
-		# We put 'text' always to the last column because it usually is stretched.
-		# The 'active' field is always true - inactive requirements are not shown at all. Doorstop doesn't tell us about them.
-		self._headerData = ['uid', 'path', 'root', 'normative', 'derived', 'reviewed', 'level', 'header', 'ref', 'references', 'links'] + list(userHeaderData) + ['text']
+		self._headerData = self._STANDARD_LEADING + list(userHeaderData) + ['text']
 
-		# Another loop to fill in the table rows
+		# Child-Links müssen einmalig über den GESAMTEN Tree berechnet werden,
+		# da Kinder auch in anderen Dokumenten liegen können.
+		childLinksIndex = build_child_links_index()
+
 		self._data = []
 		for item in iter_items(self._document):
+			item_uid = str(item.uid).strip()
 			row = []
 			for f in self._headerData:
-				row.append(str(item.get(f)))
-			row.append(item) # Doorstop item reference cached in the last row
+				if f == 'childlinks':
+					row.append(','.join(childLinksIndex.get(item_uid, [])))
+				else:
+					row.append(str(item.get(f)))
+			row.append(item)
 			self._data.append(row)
 		log.debug('['+str(self._document)+'] Requirements reloaded')
-
+		
 	# TableView methods that must be implemented
-	def rowCount(self, index):
+	def rowCount(self, index=QModelIndex()):
 		return len(self._data)
 
-	def columnCount(self, index):
+	def columnCount(self, index=QModelIndex()):
 		return len(self._headerData)
 
 	def data(self, index, role=Qt.DisplayRole):
@@ -314,41 +474,46 @@ class RequirementSetModel(QAbstractTableModel):
 		item = self._data[index.row()][len(self._headerData)]
 		colName = self._headerData[index.column()]
 
-		if role == Qt.DisplayRole: #------------------------------------- Value
+		if role == Qt.DisplayRole:
+			if colName == 'childlinks':
+				return self._data[index.row()][index.column()]
 			return str(item.get(colName))
 
 		if role == Qt.EditRole:
+			if colName == 'childlinks':
+				return self._data[index.row()][index.column()]
 			return item.get(colName)
 
-		if role == Qt.BackgroundRole: #------------------------------------- BG
+		if role == Qt.BackgroundRole:
 			if not item.get('normative') or str(item.get('level')).endswith('.0'):
 				# Use AlternateBase color from palette (adapts to light/dark mode)
 				palette = QApplication.palette()
 				return QBrush(palette.color(QPalette.AlternateBase))
 
-		if role == Qt.ForegroundRole: #------------------------------------- FG
+		if role == Qt.ForegroundRole:
 			if not item.get('normative') or str(item.get('level')).endswith('.0'):
 				# Use disabled text color from palette (adapts to theme)
 				palette = QApplication.palette()
 				return QBrush(palette.color(QPalette.Disabled, QPalette.Text))
 
+		if colName == 'links' and role == Qt.UserRole:
+			return item.get(colName)
+		
 	def headerData(self, num, orientation, role=Qt.DisplayRole):
-
-		if orientation == Qt.Horizontal: # ---------------------- Column header
-			if role == Qt.DisplayRole: #--------------------------------- Value
-				return self._headerData[num]
-			if role == Qt.ForegroundRole: # -------------------------------- FG
-				# custom attributes: blue
-				if num > 10 and num < len(self._headerData) - 1:
+		if orientation == Qt.Horizontal:
+			if role == Qt.DisplayRole:
+				key = self._headerData[num]
+				return self._DISPLAY_NAMES.get(key, key)
+			if role == Qt.ForegroundRole:
+				leading = len(self._STANDARD_LEADING)
+				if leading <= num < len(self._headerData) - 1:
 					return QBrush(QColor('blue'))
 
-		if orientation == Qt.Vertical: #---------------------------- Row header
+		if orientation == Qt.Vertical:
 			item = self._data[num][len(self._headerData)]
-			if role == Qt.DisplayRole: #--------------------------------- Value
+			if role == Qt.DisplayRole:
 				return str(item.get('uid'))
-			if role == Qt.ForegroundRole: #--------------------------------- FG
-				# wrong items: red (TODO)
-				# unreviewed items: orange
+			if role == Qt.ForegroundRole:
 				if not item.get('reviewed'):
 					return QBrush(QColor('orange'))
 				# non-normative items: use disabled text color from palette
@@ -363,7 +528,11 @@ class RequirementSetModel(QAbstractTableModel):
 		return QAbstractTableModel.headerData(self, num, orientation, role)
 
 	def flags(self, index):
-			return Qt.ItemIsEditable | Qt.ItemIsEnabled | Qt.ItemIsSelectable
+		colName = self._headerData[index.column()]
+		base = Qt.ItemIsEnabled | Qt.ItemIsSelectable
+		if colName not in ('links', 'childlinks'):
+			base |= Qt.ItemIsEditable
+		return base
 
 	def setData(self, index, text):
 		item = self._data[index.row()][len(self._headerData)]
@@ -535,8 +704,18 @@ class RequirementManager(QWidget):
 	def __init__(self, docId=None, parent=None):
 		super(RequirementManager, self).__init__(parent)
 		self._docId = docId
+		self._currentAnchorUid = None
+		self._geometryInitialized = False
 		self.load()
 
+	def showEvent(self, event):
+		super().showEvent(event)
+		if not self._geometryInitialized:
+			self._geometryInitialized = True
+			# Jetzt hat das Widget garantiert echte Geometrie
+			self.view.resizeColumnsToContents()
+			self.view.resizeRowsToContents()
+			
 	def load(self):
 		self.loadModel() # fills in the table
 		self.loadDelegate() # delegate is necessary to edit the "text" field
@@ -547,12 +726,27 @@ class RequirementManager(QWidget):
 
 	def loadDelegate(self):
 		self.delegate = RequirementsDelegate()
+		self.linksDelegate = LinksDelegate()
+
+	def onReload(self):
+		self.model.load()
+		self.delegate._htmlCache.clear()
+		self.delegate._currentCacheKey = None
+		self.model.layoutChanged.emit()
 
 	def loadView(self):
 		# Table
 		self.view = QTableView()
 		self.view.setModel(self.model)
+		self.view.selectionModel().currentChanged.connect(self._onCurrentChanged)
 		self.view.setItemDelegate(self.delegate)
+		# Set custom delegate for links column
+		linksCol = self.model._headerData.index('links')
+		childLinksCol = self.model._headerData.index('childlinks')
+		self.view.setItemDelegateForColumn(linksCol, self.linksDelegate)
+		self.view.setItemDelegateForColumn(childLinksCol, self.linksDelegate)
+		# Connect link click handler
+		self.view.clicked.connect(self.onLinkClicked)
 		self.view.setContextMenuPolicy(Qt.CustomContextMenu)
 		self.view.customContextMenuRequested.connect(self.onCustomContextMenuRequested)
 
@@ -562,7 +756,6 @@ class RequirementManager(QWidget):
 		self.view.hideColumn(self.model._headerData.index('uid'))
 		self.view.hideColumn(self.model._headerData.index('ref'))
 		self.view.hideColumn(self.model._headerData.index('references'))
-		self.view.hideColumn(self.model._headerData.index('links'))
 
 		self.view.horizontalHeader().setStretchLastSection(True)
 		self.view.setWordWrap(True)
@@ -593,7 +786,7 @@ class RequirementManager(QWidget):
 
 		# Buttons
 		reloadBtn = QPushButton("Reload")
-		reloadBtn.clicked.connect(self.model.load)
+		reloadBtn.clicked.connect(self.onReloadClicked)
 		
 		addBtn = QPushButton("Add")
 		addBtn.clicked.connect(self.onAddClicked)
@@ -717,12 +910,139 @@ class RequirementManager(QWidget):
 
 		menu.exec(self.view.mapToGlobal(pos))
 
+	def onLinkClicked(self, index):
+		colName = self.model._headerData[index.column()]
+		if colName not in ('links', 'childlinks'):
+			return
+		pos = self.view.viewport().mapFromGlobal(QCursor.pos())
+		linkPos = self.view.visualRect(index).topLeft()
+		relativePos = pos - linkPos
+		delegate = self.view.itemDelegateForColumn(index.column())
+		if delegate and hasattr(delegate, 'getLinkAtPos'):
+			uid = delegate.getLinkAtPos(relativePos)
+			if uid:
+				self.navigateToRequirement(uid)
+
+	def onReloadClicked(self):
+		main_window = self.parent()
+		while main_window and not isinstance(main_window, MainWindow):
+			main_window = main_window.parent()
+		if main_window:
+			main_window.reloadAll()
+
+	def navigateToRequirement(self, uid):
+		"""Navigate to the tab and row containing the given UID."""
+		global reqtree
+		uid = uid.strip().rstrip(',')
+		main_window = self.parent()
+		while main_window and not isinstance(main_window, MainWindow):
+			main_window = main_window.parent()
+		if not main_window:
+			QMessageBox.critical(self, "Error", "Could not find main window.")
+			return
+
+		for document in reqtree:
+			for item in iter_items(document):
+				if str(item.uid).strip() != uid:
+					continue
+				for i in range(main_window.tabs.count()):
+					tab_widget = main_window.tabs.widget(i)
+					req_manager = tab_widget.findChild(RequirementManager)
+					if not req_manager or req_manager._docId != document.prefix:
+						continue
+					model = req_manager.model
+					view = req_manager.view
+					for row in range(model.rowCount(QModelIndex())):
+						row_item = model._data[row][len(model._headerData)]
+						if str(row_item.uid).strip() != uid:
+							continue
+						log.debug(f"Navigating to {uid}: tab {i}, row {row}")
+						main_window.tabs.setCurrentIndex(i)
+						self._scrollToRow(model, view, row)
+						return
+		log.error(f"UID '{uid}' not found in requirements tree")
+		QMessageBox.information(self, "Link Not Found",
+								f"Requirement '{uid}' was not found in the requirements tree.")
+
+	def _firstVisibleColumn(self, view, model):
+		for c in range(model.columnCount(QModelIndex())):
+			if not view.isColumnHidden(c):
+				return c
+		return 0
+
+	def _doScroll(self):
+		if not hasattr(self, '_scrollRow'):
+			return
+		row = self._scrollRow
+		model = self._scrollModel
+		view = self._scrollView
+
+		col = self._firstVisibleColumn(view, model)
+		idx = model.index(row, col)
+		rect = view.visualRect(idx)
+
+		if (not rect.isValid() or rect.height() == 0) and self._scrollAttempts < 20:
+			self._scrollAttempts += 1
+			QTimer.singleShot(10, self._doScroll)
+			return
+
+		del self._scrollRow, self._scrollModel, self._scrollView, self._scrollAttempts
+
+		view.scrollTo(idx, QAbstractItemView.PositionAtCenter)
+		view.setCurrentIndex(idx)
+		view.selectRow(row)
+		if view.isVisible():
+			view.setFocus()
+		log.debug(f"Scrolled to row {row}")
+
+	def _captureAnchorUid(self):
+		"""Liefert die zuletzt bekannte Anker-UID. Fällt nur beim allerersten
+		Aufruf (noch nie etwas selektiert) auf die oberste sichtbare Zeile zurück."""
+		if self._currentAnchorUid is not None:
+			return self._currentAnchorUid
+
+		if self.model.rowCount(QModelIndex()) == 0:
+			return None
+		idx = self.view.indexAt(self.view.viewport().rect().topLeft())
+		if not idx.isValid():
+			return None
+		item = self.model.getItem(idx)
+		return str(item.uid).strip() if item is not None else None
+
+	def _restoreAnchorUid(self, uid):
+		"""Scrollt zur Zeile mit uid, oder an den Anfang, falls nicht mehr vorhanden."""
+		row = 0
+		if uid is not None:
+			for r in range(self.model.rowCount(QModelIndex())):
+				row_item = self.model._data[r][len(self.model._headerData)]
+				if str(row_item.uid).strip() == uid:
+					row = r
+					break
+		self._scrollToRow(self.model, self.view, row)	
+
+	def _scrollToRow(self, model, view, row):
+		if row is None or row < 0:
+			row = 0
+		self._scrollRow = row
+		self._scrollModel = model
+		self._scrollView = view
+		self._scrollAttempts = 0
+		QTimer.singleShot(0, self._doScroll)
+
+	def _onCurrentChanged(self, current, previous):
+		"""Tracks the anchor UID continuously. Ignores invalid indices
+		(e.g. those caused by beginResetModel/endResetModel), so the
+		last known good anchor survives a reset."""
+		item = self.model.getItem(current)
+		if item is not None:
+			self._currentAnchorUid = str(item.uid).strip()
+		# Bei invalidem current (durch Reset) bewusst NICHT überschreiben
+
 # Main application
 class MainWindow(QMainWindow):
 	def __init__(self, parent=None):
 		super(MainWindow, self).__init__(parent)
 		self.setWindowTitle('Doorhole - doorstop requirements editor')
-		self.resize(1400, 900)  # Set default window size
 
 		global reqtree
 		reqtree = doorstop.build()
@@ -730,26 +1050,59 @@ class MainWindow(QMainWindow):
 		self.tabs = QTabWidget()
 		self.setCentralWidget(self.tabs)
 
-		# One tab for each document
-		for document in reqtree:
-			# container widget
-			container = QTabWidget()
+		self._requirementManagers = []   # NEU
 
-			# widgets
+		for document in reqtree:
+			container = QTabWidget()
 			reqsW = QWidget()
 			reqsView = RequirementManager(document.prefix)
+			self._requirementManagers.append(reqsView)   # NEU
 
 			reqsLy = QVBoxLayout()
 			reqsLy.addWidget(reqsView)
 			reqsW.setLayout(reqsLy)
-
 			container.addTab(reqsW, 'Requirements')
 
 			title = document.parent + ' -> ' + document.prefix if document.parent else document.prefix
 			self.tabs.addTab(container, title)
 
-if __name__ == "__main__":
+	def reloadAll(self):
+		"""Rebuild the entire requirements tree from disk and refresh every
+		open tab, preserving each tab's scroll position if the anchor
+		requirement still exists there."""
+		global reqtree
+
+		anchors = {}
+		for req_manager in self._requirementManagers:
+			anchors[req_manager] = req_manager._captureAnchorUid()
+
+		log.info("Rebuilding requirements tree from disk...")
+		reqtree = doorstop.build()
+
+		for req_manager in self._requirementManagers:
+			req_manager.model.beginResetModel()
+			req_manager.model.load()
+			req_manager.model.endResetModel()
+
+			req_manager.delegate._htmlCache.clear()
+			req_manager.delegate._currentCacheKey = None
+
+			# Nur resizen, wenn der Tab bereits einmal echte Geometrie hatte.
+			# Für noch nie gezeigte Tabs übernimmt showEvent() das später korrekt.
+			if req_manager._geometryInitialized:
+				req_manager.view.resizeColumnsToContents()
+				req_manager.view.resizeRowsToContents()
+
+			req_manager._restoreAnchorUid(anchors[req_manager])
+
+		log.info("Reload complete.")
+
+def start_app():
 	app = QApplication(sys.argv)
 	win = MainWindow()
 	win.show()
 	sys.exit(app.exec())
+
+
+if __name__ == "__main__":
+	start_app()
