@@ -191,7 +191,6 @@ class RequirementsDelegate(QStyledItemDelegate):
 				os.path.dirname(os.path.realpath(__file__))
 				os.chdir(item_path) # necessary to solve linked items with relative paths (e.g. images)
 				html = self.md.convert(text)
-				log.debug(f"Rendered HTML for {item.uid}:\n{html}")
 				self.doc.setHtml(html)
 			except Exception as e:
 				warning = '**An error occurred while displaying the content**\n\n: '+ str(e) + '\n\n'
