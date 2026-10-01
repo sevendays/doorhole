@@ -183,6 +183,9 @@ class RequirementsDelegate(QStyledItemDelegate):
 	def __init__(self, parent=None):
 		super(RequirementsDelegate, self).__init__(parent)
 		self.doc = QTextDocument(self)
+		self.docIndex = None
+		self.h = None
+		self.w = None
 		self.doc.setDefaultStyleSheet(self._DOCUMENT_CSS)
 		self.md = markdown.Markdown(extensions=EXTENSIONS)
 		self._htmlCache = {}  # key: (uid, text_hash, width) -> html string
